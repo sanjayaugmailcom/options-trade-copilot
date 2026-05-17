@@ -165,6 +165,7 @@ export default function App() {
 
   const bestCalls = useMemo(() => findBestContracts(calls, underlyingPrice, 'call'), [calls, underlyingPrice]);
   const bestPuts = useMemo(() => findBestContracts(puts, underlyingPrice, 'put'), [puts, underlyingPrice]);
+  const visibleContracts = contractType === 'call' ? bestCalls : bestPuts;
 
   const chartData = useMemo(() => {
     if (!selectedContract) return null;
@@ -204,6 +205,30 @@ export default function App() {
           </label>
           <button type="submit">Load</button>
         </form>
+
+        <div className="contract-type-toggle">
+          <button
+            type="button"
+            className={contractType === 'call' ? 'active' : ''}
+            onClick={() => {
+              setContractType('call');
+              setSelectedContract(null);
+            }}
+          >
+            Calls
+          </button>
+          <button
+            type="button"
+            className={contractType === 'put' ? 'active' : ''}
+            onClick={() => {
+              setContractType('put');
+              setSelectedContract(null);
+            }}
+          >
+            Puts
+          </button>
+        </div>
+
         <div><strong>Underlying Price:</strong> {underlyingPrice ? formatCurrency(underlyingPrice) : 'Loading...'}</div>
         <div><strong>Expiry:</strong>
           <select
@@ -222,70 +247,36 @@ export default function App() {
       {error && <div className="error-banner">Error: {error}</div>}
       {loading && <div className="loading-banner">Loading options data...</div>}
 
-      <section className="grid-two">
-        <div className="list-panel">
-          <h2>Top 100 Call candidates</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Strike</th>
-                <th>Prem.</th>
-                <th>ROI(20%)</th>
-                <th>Breakeven</th>
-                <th>IV</th>
+      <section className="list-panel">
+        <h2>Top 100 {contractType === 'call' ? 'Call' : 'Put'} candidates</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Strike</th>
+              <th>Prem.</th>
+              <th>ROI(20%)</th>
+              <th>Breakeven</th>
+              <th>IV</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleContracts.map((item) => (
+              <tr
+                key={item.contract.contractSymbol}
+                onClick={() => {
+                  setSelectedContract(item.contract);
+                  setContractType(contractType);
+                }}
+              >
+                <td>{item.contract.strike}</td>
+                <td>{formatCurrency(item.contract.lastPrice)}</td>
+                <td>{item.rewardRatio.toFixed(2)}</td>
+                <td>{formatCurrency(item.breakeven)}</td>
+                <td>{item.contract.impliedVolatility.toFixed(2)}</td>
               </tr>
-            </thead>
-            <tbody>
-              {bestCalls.map((item) => (
-                <tr
-                  key={item.contract.contractSymbol}
-                  onClick={() => {
-                    setSelectedContract(item.contract);
-                    setContractType('call');
-                  }}
-                >
-                  <td>{item.contract.strike}</td>
-                  <td>{formatCurrency(item.contract.lastPrice)}</td>
-                  <td>{item.rewardRatio.toFixed(2)}</td>
-                  <td>{formatCurrency(item.breakeven)}</td>
-                  <td>{item.contract.impliedVolatility.toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="list-panel">
-          <h2>Top 100 Put candidates</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Strike</th>
-                <th>Prem.</th>
-                <th>ROI(20%)</th>
-                <th>Breakeven</th>
-                <th>IV</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bestPuts.map((item) => (
-                <tr
-                  key={item.contract.contractSymbol}
-                  onClick={() => {
-                    setSelectedContract(item.contract);
-                    setContractType('put');
-                  }}
-                >
-                  <td>{item.contract.strike}</td>
-                  <td>{formatCurrency(item.contract.lastPrice)}</td>
-                  <td>{item.rewardRatio.toFixed(2)}</td>
-                  <td>{formatCurrency(item.breakeven)}</td>
-                  <td>{item.contract.impliedVolatility.toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </section>
 
       {selectedContract && chartData && (
