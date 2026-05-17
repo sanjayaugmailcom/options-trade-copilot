@@ -45,19 +45,20 @@ function buildPayoffSeries(contract: OptionContract, underlyingPrice: number, ty
   return { labels, values };
 }
 
-function computeRewardRatio(contract: OptionContract, underlyingPrice: number, type: 'call' | 'put') {
-  const targetPrice = type === 'call' ? underlyingPrice * 1.2 : underlyingPrice * 0.8;
+function computeRewardRatio(contract: OptionContract, underlyingPrice: number, type: 'call' | 'put', roiPercentage: number = 20) {
+  const multiplier = 1 + (roiPercentage / 100);
+  const targetPrice = type === 'call' ? underlyingPrice * multiplier : underlyingPrice / multiplier;
   const intrinsic = type === 'call' ? Math.max(0, targetPrice - contract.strike) : Math.max(0, contract.strike - targetPrice);
   const profit = (intrinsic - contract.lastPrice) * 100;
   if (contract.lastPrice <= 0) return 0;
   return profit / (contract.lastPrice * 100);
 }
 
-function findBestContracts(contracts: OptionContract[], underlyingPrice: number, type: 'call' | 'put') {
+function findBestContracts(contracts: OptionContract[], underlyingPrice: number, type: 'call' | 'put', roiPercentage: number = 20) {
   const enriched = contracts
     .map((contract) => ({
       contract,
-      rewardRatio: computeRewardRatio(contract, underlyingPrice, type),
+      rewardRatio: computeRewardRatio(contract, underlyingPrice, type, roiPercentage),
       breakeven:
         type === 'call'
           ? contract.strike + contract.lastPrice
@@ -74,8 +75,8 @@ function findBestContracts(contracts: OptionContract[], underlyingPrice: number,
 }
 
 export default function App() {
-  const [symbol, setSymbol] = useState<string>('META');
-  const [symbolInput, setSymbolInput] = useState<string>('META');
+  const [symbol, setSymbol] = useState<string>('HYLN');
+  const [symbolInput, setSymbolInput] = useState<string>('HYLN');
   const [expirationDates, setExpirationDates] = useState<number[]>([]);
   const [selectedExpiry, setSelectedExpiry] = useState<number | null>(null);
   const [calls, setCalls] = useState<OptionContract[]>([]);
@@ -84,7 +85,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedContract, setSelectedContract] = useState<OptionContract | null>(null);
-  const [contractType, setContractType] = useState<'call' | 'put'>('call');
+  const [contractType, setContractType] = useState<'call' | 'put'>('put');
+  const [roiPercentage, setRoiPercentage] = useState<number>(20);
 
   async function fetchChain(expiry: number | null, symbolName: string) {
     if (!expiry) return;
@@ -163,8 +165,8 @@ export default function App() {
     }
   };
 
-  const bestCalls = useMemo(() => findBestContracts(calls, underlyingPrice, 'call'), [calls, underlyingPrice]);
-  const bestPuts = useMemo(() => findBestContracts(puts, underlyingPrice, 'put'), [puts, underlyingPrice]);
+  const bestCalls = useMemo(() => findBestContracts(calls, underlyingPrice, 'call', roiPercentage), [calls, underlyingPrice, roiPercentage]);
+  const bestPuts = useMemo(() => findBestContracts(puts, underlyingPrice, 'put', roiPercentage), [puts, underlyingPrice, roiPercentage]);
   const visibleContracts = contractType === 'call' ? bestCalls : bestPuts;
 
   const chartData = useMemo(() => {
@@ -229,6 +231,22 @@ export default function App() {
           </button>
         </div>
 
+        <div className="roi-selector">
+          <strong>ROI Target:</strong>
+          <div className="roi-buttons">
+            {[20, 30, 40].map((roi) => (
+              <button
+                key={roi}
+                type="button"
+                className={roiPercentage === roi ? 'active' : ''}
+                onClick={() => setRoiPercentage(roi)}
+              >
+                {roi}%
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div><strong>Underlying Price:</strong> {underlyingPrice ? formatCurrency(underlyingPrice) : 'Loading...'}</div>
         <div><strong>Expiry:</strong>
           <select
@@ -254,7 +272,7 @@ export default function App() {
             <tr>
               <th>Strike</th>
               <th>Prem.</th>
-              <th>ROI(20%)</th>
+              <th>ROI({roiPercentage}%)</th>
               <th>Breakeven</th>
               <th>IV</th>
             </tr>

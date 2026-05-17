@@ -66,6 +66,44 @@ header p {
   background: #ffffff;
 }
 
+.contract-type-toggle,
+.roi-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.contract-type-toggle button,
+.roi-buttons button {
+  padding: 0.625rem 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.625rem;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  font-size: 0.95rem;
+}
+
+.contract-type-toggle,
+.roi-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.contract-type-toggle button:hover,
+.roi-buttons button:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.contract-type-toggle button.active,
+.roi-buttons button.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
+
 .grid-two {
   display: grid;
   gap: 1.5rem;
