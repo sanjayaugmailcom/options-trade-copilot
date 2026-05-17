@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -14,7 +14,6 @@ import type { OptionContract } from './types';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
-const META_SYMBOL = 'META';
 const YAHOO_OPTIONS_URL = '/api/options/';
 const TOP_CANDIDATE_COUNT = 100;
 
@@ -75,6 +74,8 @@ function findBestContracts(contracts: OptionContract[], underlyingPrice: number,
 }
 
 export default function App() {
+  const [symbol, setSymbol] = useState<string>('META');
+  const [symbolInput, setSymbolInput] = useState<string>('META');
   const [expirationDates, setExpirationDates] = useState<number[]>([]);
   const [selectedExpiry, setSelectedExpiry] = useState<number | null>(null);
   const [calls, setCalls] = useState<OptionContract[]>([]);
@@ -85,14 +86,14 @@ export default function App() {
   const [selectedContract, setSelectedContract] = useState<OptionContract | null>(null);
   const [contractType, setContractType] = useState<'call' | 'put'>('call');
 
-  async function fetchChain(expiry: number | null) {
+  async function fetchChain(expiry: number | null, symbolName: string) {
     if (!expiry) return;
     setLoading(true);
     setError(null);
     setSelectedContract(null);
 
     try {
-      const response = await fetch(`${YAHOO_OPTIONS_URL}${META_SYMBOL}?date=${expiry}`);
+      const response = await fetch(`${YAHOO_OPTIONS_URL}${symbolName}?date=${expiry}`);
       if (!response.ok) {
         throw new Error(`API returned ${response.status}`);
       }
@@ -114,11 +115,17 @@ export default function App() {
   }
 
   useEffect(() => {
-    async function loadInitial() {
+    async function loadSymbol() {
       setLoading(true);
       setError(null);
+      setSelectedContract(null);
+      setSelectedExpiry(null);
+      setExpirationDates([]);
+      setCalls([]);
+      setPuts([]);
+
       try {
-        const response = await fetch(`${YAHOO_OPTIONS_URL}${META_SYMBOL}`);
+        const response = await fetch(`${YAHOO_OPTIONS_URL}${symbol}`);
         if (!response.ok) {
           throw new Error(`API returned ${response.status}`);
         }
@@ -140,14 +147,21 @@ export default function App() {
       }
     }
 
-    loadInitial();
-  }, []);
+    loadSymbol();
+  }, [symbol]);
 
-  useEffect(() => {
-    if (selectedExpiry) {
-      fetchChain(selectedExpiry);
+  const handleSymbolSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!symbolInput.trim()) return;
+    setSymbol(symbolInput.trim().toUpperCase());
+  };
+
+  const handleExpiryChange = async (expiry: number | null) => {
+    setSelectedExpiry(expiry);
+    if (expiry) {
+      await fetchChain(expiry, symbol);
     }
-  }, [selectedExpiry]);
+  };
 
   const bestCalls = useMemo(() => findBestContracts(calls, underlyingPrice, 'call'), [calls, underlyingPrice]);
   const bestPuts = useMemo(() => findBestContracts(puts, underlyingPrice, 'put'), [puts, underlyingPrice]);
@@ -173,17 +187,28 @@ export default function App() {
   return (
     <div className="page-container">
       <header>
-        <h1>META Options Risk vs Reward</h1>
-        <p>Fetches META option chains, ranks contracts by potential reward vs premium, and plots payoff curves.</p>
+        <h1>{symbol} Options Risk vs Reward</h1>
+        <p>Fetches option chains, ranks contracts by reward vs premium, and plots payoff curves.</p>
       </header>
 
       <section className="summary-card">
-        <div><strong>Symbol:</strong> {META_SYMBOL}</div>
+        <form onSubmit={handleSymbolSubmit} className="symbol-form">
+          <label>
+            <strong>Symbol:</strong>
+            <input
+              type="text"
+              value={symbolInput}
+              onChange={(event: ChangeEvent<HTMLInputElement>) => setSymbolInput(event.target.value)}
+              placeholder="Enter ticker symbol"
+            />
+          </label>
+          <button type="submit">Load</button>
+        </form>
         <div><strong>Underlying Price:</strong> {underlyingPrice ? formatCurrency(underlyingPrice) : 'Loading...'}</div>
         <div><strong>Expiry:</strong>
           <select
             value={selectedExpiry ?? ''}
-            onChange={(event: ChangeEvent<HTMLSelectElement>) => setSelectedExpiry(Number(event.target.value) || null)}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => handleExpiryChange(Number(event.target.value) || null)}
           >
             {expirationDates.map((expiry) => (
               <option key={expiry} value={expiry}>
