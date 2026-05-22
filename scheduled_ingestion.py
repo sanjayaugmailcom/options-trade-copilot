@@ -1,0 +1,162 @@
+"""
+Scheduled Options Data Ingestion
+Run this script on a schedule (via Windows Task Scheduler) to continuously ingest data
+"""
+import os
+import sys
+import logging
+from datetime import datetime, time
+from dotenv import load_dotenv
+from db_client import TimescaleDBClient
+from polygon_ingestion import PolygonOptionsIngester
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('options_ingestion.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+class ScheduledIngester:
+    """Manages scheduled ingestion of options data"""
+    
+    def __init__(self):
+        self.api_key = os.getenv("POLYGON_API_KEY")
+        if not self.api_key:
+            raise ValueError("POLYGON_API_KEY environment variable not set")
+        
+        self.db = TimescaleDBClient(
+            host=os.getenv("DB_HOST", "localhost"),
+            port=int(os.getenv("DB_PORT", 5432)),
+            database=os.getenv("DB_NAME", "options_db"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", "password")
+        )
+        
+        self.ingester = PolygonOptionsIngester(self.api_key, self.db)
+        self.tickers = os.getenv("TICKERS", "META,SPY,QQQ").split(",")
+    
+    def ingest_latest_snapshots(self) -> dict:
+        """Ingest latest option snapshots for all tickers"""
+        logger.info(f"Starting snapshot ingestion for {len(self.tickers)} tickers")
+        results = self.ingester.ingest_multiple_tickers(self.tickers)
+        
+        total_inserted = sum(results.values())
+        logger.info(f"✓ Ingestion complete: {total_inserted} total quotes inserted")
+        
+        return results
+    
+    def print_statistics(self):
+        """Print current database statistics"""
+        logger.info("=" * 60)
+        logger.info("Database Statistics")
+        logger.info("=" * 60)
+        
+        for ticker in self.tickers:
+            try:
+                stats = self.db.get_statistics(ticker)
+                if stats:
+                    logger.info(
+                        f"{ticker}: {stats['total_quotes']} quotes "
+                        f"({stats['unique_expirations']} expirations, "
+                        f"{stats['unique_strikes']} strikes)"
+                    )
+            except Exception as e:
+                logger.warning(f"Could not get stats for {ticker}: {e}")
+    
+    def run_once(self):
+        """Run ingestion once"""
+        try:
+            logger.info(f"Starting options data ingestion at {datetime.now()}")
+            
+            # Ingest latest data
+            results = self.ingest_latest_snapshots()
+            
+            # Print statistics
+            self.print_statistics()
+            
+            logger.info("✓ Ingestion cycle completed successfully")
+            return True
+        
+        except Exception as e:
+            logger.error(f"✗ Ingestion failed: {e}", exc_info=True)
+            return False
+        
+        finally:
+            self.db.close()
+    
+    def run_continuous(self, interval_minutes: int = 60):
+        """
+        Run ingestion continuously at specified interval.
+        Press Ctrl+C to stop.
+        """
+        import time
+        
+        logger.info(f"Starting continuous ingestion (every {interval_minutes} minutes)")
+        
+        try:
+            iteration = 0
+            while True:
+                iteration += 1
+                logger.info(f"\n--- Iteration {iteration} ---")
+                
+                try:
+                    results = self.ingest_latest_snapshots()
+                    self.print_statistics()
+                except Exception as e:
+                    logger.error(f"Error during ingestion: {e}", exc_info=True)
+                
+                logger.info(f"Next ingestion in {interval_minutes} minutes...")
+                time.sleep(interval_minutes * 60)
+        
+        except KeyboardInterrupt:
+            logger.info("Continuous ingestion stopped by user")
+        
+        finally:
+            self.db.close()
+
+
+def main():
+    """Main entry point"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Schedule options data ingestion')
+    parser.add_argument(
+        '--mode',
+        choices=['once', 'continuous'],
+        default='once',
+        help='Run once or continuously'
+    )
+    parser.add_argument(
+        '--interval',
+        type=int,
+        default=60,
+        help='Interval in minutes for continuous mode (default: 60)'
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        ingester = ScheduledIngester()
+        
+        if args.mode == 'once':
+            success = ingester.run_once()
+            sys.exit(0 if success else 1)
+        else:
+            ingester.run_continuous(args.interval)
+    
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
