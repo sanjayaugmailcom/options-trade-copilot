@@ -1,4 +1,0 @@
-Flask==2.3.3
-Flask-Cors==3.0.10
-yfinance==0.2.28
-pandas==2.2.3
