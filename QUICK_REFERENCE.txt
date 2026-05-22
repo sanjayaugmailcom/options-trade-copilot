@@ -1,0 +1,305 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                         QUICK REFERENCE CARD                                  ║
+║            Options Strategy Testing with Polygon.io - Getting Started         ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+📋 INSTALLATION (Copy & Paste)
+════════════════════════════════════════════════════════════════════════════════
+
+# 1. Setup project directory
+python setup.py
+
+# 2. Install dependencies (both at same time or separate)
+pip install -r requirements.txt
+npm install
+
+# 3. Create .env file (copy the template)
+copy .env.example .env
+# Then edit .env and add: POLYGON_API_KEY=your_api_key_here
+
+
+🚀 RUNNING THE APPLICATION
+════════════════════════════════════════════════════════════════════════════════
+
+TERMINAL 1 - Backend:
+  python main.py
+  → Starts FastAPI on http://localhost:8000
+
+TERMINAL 2 - Frontend:
+  npm run dev
+  → Starts Vite on http://localhost:3000
+
+BROWSER:
+  http://localhost:3000
+
+
+💡 QUICK USAGE
+════════════════════════════════════════════════════════════════════════════════
+
+1. Enter stock symbol (e.g., SPY, AAPL, TSLA)
+2. Select expiration date from dropdown
+3. Click "Backtest Strategies"
+4. View 4 strategy cards with metrics
+5. Check comparison table for side-by-side analysis
+
+
+📊 WHAT YOU'LL SEE
+════════════════════════════════════════════════════════════════════════════════
+
+For each strategy:
+  • Entry Cost - Initial capital needed
+  • Max Profit - Best-case scenario
+  • Max Loss - Worst-case scenario
+  • Return % - (Max Profit / Entry Cost) × 100
+  • Risk/Reward - Max Profit / Max Loss
+  • Breakeven - Stock price(s) where P&L = 0
+
+
+🎨 STRATEGY TYPES
+════════════════════════════════════════════════════════════════════════════════
+
+1. COVERED CALL
+   Long Stock + Short Call
+   🟢 Income generation
+   → Max Profit = Strike - Cost
+   
+2. PROTECTIVE PUT
+   Long Stock + Long Put
+   🟢 Downside protection
+   → Max Profit = Unlimited
+   
+3. BULL CALL SPREAD
+   Long Call + Short Call (higher)
+   🟢 Bullish with limited capital
+   → Max Profit = Spread Width - Cost
+   
+4. IRON CONDOR
+   Short Call Spread + Short Put Spread
+   🟢 Neutral outlook, defined risk
+   → Max Profit = Credit Received
+
+
+🔧 CONFIGURATION
+════════════════════════════════════════════════════════════════════════════════
+
+Backend Port:   8000 (change in main.py)
+Frontend Port:  3000 (change in vite.config.js)
+API Key:        Set in .env file
+API Endpoint:   http://localhost:8000/backtest/{symbol}/{date}
+
+
+📁 KEY FILES
+════════════════════════════════════════════════════════════════════════════════
+
+Backend:   main.py
+Frontend:  src/App.jsx
+Config:    .env (create from .env.example)
+Docs:      README.md, GETTING_STARTED.md
+
+
+🐛 COMMON ISSUES
+════════════════════════════════════════════════════════════════════════════════
+
+❌ "No module named fastapi"
+   ✓ Run: pip install -r requirements.txt
+
+❌ "Connection refused"
+   ✓ Make sure backend is running: python main.py
+
+❌ "Cannot find module react"
+   ✓ Run: npm install
+
+❌ "POLYGON_API_KEY error"
+   ✓ Check .env file has correct API key
+
+❌ "Port 3000 already in use"
+   ✓ Kill the process or change port in vite.config.js
+
+❌ "Port 8000 already in use"
+   ✓ Kill the process or change port in main.py
+
+
+📚 DOCUMENTATION
+════════════════════════════════════════════════════════════════════════════════
+
+README.md             → Full documentation
+GETTING_STARTED.md    → Step-by-step guide
+PROJECT_SUMMARY.md    → Complete overview
+SETUP.md              → Setup instructions
+VISUAL_GUIDE.md       → Diagrams & examples
+COMPLETION_SUMMARY.txt → Project summary
+DELIVERY_MANIFEST.txt → File listing
+
+
+🌐 API ENDPOINTS
+════════════════════════════════════════════════════════════════════════════════
+
+GET /health
+  → Check if backend is running
+  Response: {"status": "ok"}
+
+GET /backtest/{symbol}/{expiration}
+  → Run backtest for a symbol
+  Example: /backtest/SPY/2026-05-29
+  Returns: JSON with 4 strategies and metrics
+
+
+✅ TEST SYMBOLS
+════════════════════════════════════════════════════════════════════════════════
+
+SPY   - S&P 500 ETF (most liquid)
+AAPL  - Apple (tech stock)
+QQQ   - Nasdaq ETF (tech index)
+TSLA  - Tesla (volatile)
+MSFT  - Microsoft (stable)
+GOOGL - Google (tech)
+AMZN  - Amazon (retail)
+NIO   - NIO (EV)
+
+
+🎯 WORKFLOW
+════════════════════════════════════════════════════════════════════════════════
+
+1. Run setup.py
+2. Install dependencies (pip + npm)
+3. Create .env with API key
+4. Start backend: python main.py
+5. Start frontend: npm run dev
+6. Open http://localhost:3000
+7. Enter symbol (SPY)
+8. Select date
+9. Click backtest
+10. View results
+11. Compare strategies
+12. Analyze metrics
+
+
+💰 GETTING POLYGON.IO API KEY
+════════════════════════════════════════════════════════════════════════════════
+
+1. Visit: https://polygon.io/
+2. Sign up (free tier available)
+3. Get your API key from dashboard
+4. Add to .env file
+
+
+📱 KEYBOARD SHORTCUTS
+════════════════════════════════════════════════════════════════════════════════
+
+F12              → Browser dev tools
+Ctrl+Enter       → Submit form
+Tab              → Navigate form fields
+
+
+🎨 COLOR MEANINGS
+════════════════════════════════════════════════════════════════════════════════
+
+🟢 GREEN  → Return > 50% (Excellent)
+🔵 BLUE   → Return 20-50% (Good)
+🟡 YELLOW → Return 0-20% (OK)
+🔴 RED    → Return < 0% (Poor)
+
+
+⚡ PERFORMANCE TIPS
+════════════════════════════════════════════════════════════════════════════════
+
+• Use SPY for fastest results (most liquid)
+• Test with nearby expirations
+• All calculations are instant (once data loads)
+• Browser caches results (refresh to get new data)
+
+
+📞 SUPPORT
+════════════════════════════════════════════════════════════════════════════════
+
+Polygon.io API:
+  Status: https://status.polygon.io/
+  Docs: https://polygon.io/docs/options/
+
+FastAPI:
+  Interactive Docs: http://localhost:8000/docs
+  Alternative: http://localhost:8000/redoc
+
+React:
+  Docs: https://react.dev/
+
+
+✨ BONUS FEATURES
+════════════════════════════════════════════════════════════════════════════════
+
+✓ Auto-generates next 10 Fridays
+✓ Real-time bid-ask spreads
+✓ Responsive design (mobile-friendly)
+✓ Smooth animations
+✓ Error messages
+✓ Loading states
+✓ Color-coded results
+✓ Comparison table
+✓ Risk/reward analysis
+
+
+🎓 LEARNING RESOURCES
+════════════════════════════════════════════════════════════════════════════════
+
+Options Trading:
+  • Investopedia: investopedia.com/options
+  • Khan Academy: khanacademy.org
+
+Python/FastAPI:
+  • FastAPI docs: fastapi.tiangolo.com
+  • Real Python: realpython.com
+
+React:
+  • React.dev: react.dev
+  • React Tutorial: react.dev/learn
+
+
+📊 EXPECTED OUTPUTS (Example)
+════════════════════════════════════════════════════════════════════════════════
+
+Input: SPY, 2026-05-29
+
+Output:
+  Current Price: $450.25
+  
+  Covered Call:
+    Max Profit: $0.00
+    Max Loss: $450.25
+    Return: 0.00%
+  
+  Protective Put:
+    Max Profit: Unlimited
+    Max Loss: $15.25
+    Return: -3.27%
+  
+  Bull Call Spread:
+    Max Profit: $2.50
+    Max Loss: $2.50
+    Return: 100%
+  
+  Iron Condor:
+    Max Profit: $0.75
+    Max Loss: $4.25
+    Return: 100%
+
+
+🎯 NEXT STEPS
+════════════════════════════════════════════════════════════════════════════════
+
+1. ✅ Run python setup.py
+2. ✅ Install dependencies
+3. ✅ Create .env file
+4. ✅ Start backend
+5. ✅ Start frontend
+6. ✅ Test with SPY
+7. ✅ Compare results
+8. ✅ Try different symbols
+9. ✅ Analyze returns
+10. ✅ Deploy if happy
+
+
+════════════════════════════════════════════════════════════════════════════════
+Created: May 22, 2026
+Status: ✅ Ready to Use
+Support: See documentation files
+════════════════════════════════════════════════════════════════════════════════
