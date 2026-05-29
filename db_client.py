@@ -202,6 +202,29 @@ class TimescaleDBClient:
             result = cur.fetchone()
             return dict(result) if result else {}
     
+    def delete_daily_records(
+        self,
+        ticker: str,
+        expiration_date: str,
+        ny_date,  # datetime.date in New York timezone
+    ) -> int:
+        """Delete all records for ticker+expiration ingested on a given NY calendar day."""
+        query = """
+            DELETE FROM options_quotes
+            WHERE ticker = %s
+              AND expiration_date = %s
+              AND (time AT TIME ZONE 'America/New_York')::date = %s
+        """
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(query, [ticker, expiration_date, ny_date])
+            deleted = cur.rowcount
+            logger.info(
+                f"Deleted {deleted} stale records for {ticker} {expiration_date} "
+                f"on {ny_date} (NY) before re-ingestion"
+            )
+            return deleted
+
     def close(self):
         """Close all connections in the pool"""
         if self.pool:

@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, time
 from dotenv import load_dotenv
 from db_client import TimescaleDBClient
-from polygon_ingestion import PolygonOptionsIngester
+from polygon_ingestion import MassiveOptionsIngester as PolygonOptionsIngester
 
 # Load environment variables
 load_dotenv()
@@ -45,13 +45,21 @@ class ScheduledIngester:
         self.tickers = os.getenv("TICKERS", "META,SPY,QQQ").split(",")
     
     def ingest_latest_snapshots(self) -> dict:
-        """Ingest latest option snapshots for all tickers"""
-        logger.info(f"Starting snapshot ingestion for {len(self.tickers)} tickers")
-        results = self.ingester.ingest_multiple_tickers(self.tickers)
-        
+        """
+        For each ticker: ingest the options chain expiring today, or the next
+        available expiration if today has no listed options.
+        """
+        logger.info(f"Starting nearest-expiration ingestion for {len(self.tickers)} tickers")
+        results = {}
+        for ticker in self.tickers:
+            try:
+                results[ticker] = self.ingester.ingest_nearest_expiration(ticker)
+            except Exception as e:
+                logger.error(f"Failed to ingest {ticker}: {e}", exc_info=True)
+                results[ticker] = 0
+
         total_inserted = sum(results.values())
         logger.info(f"✓ Ingestion complete: {total_inserted} total quotes inserted")
-        
         return results
     
     def print_statistics(self):

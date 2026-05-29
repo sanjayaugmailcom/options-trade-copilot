@@ -4,10 +4,18 @@ Fetches options data from Massive API and stores in TimescaleDB
 """
 import requests
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 import logging
 from db_client import TimescaleDBClient
+
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def ny_today():
+    """Return today's date in New York time."""
+    return datetime.now(tz=NY_TZ).date()
 
 logging.basicConfig(
     level=logging.DEBUG,  # Enable debug logging to see API response details
@@ -77,118 +85,119 @@ class MassiveOptionsIngester:
             logger.error(f"Failed to fetch snapshot for {ticker}: {e}")
             return []
     
+    def get_nearest_expiration(self, ticker: str) -> Optional[str]:
+        """
+        Return today's expiration date if options exist, otherwise the next
+        available expiration date on or after today.
+        Returns a YYYY-MM-DD string, or None if nothing found.
+        """
+        today = ny_today().isoformat()
+        url = f"{self.BASE_URL}/v3/snapshot/options/{ticker}"
+
+        # Try today first
+        try:
+            resp = self.session.get(
+                url,
+                params={"expiration_date": today, "limit": 1},
+                headers=self.headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") == "OK" and data.get("results"):
+                logger.info(f"Found options expiring today ({today}) for {ticker}")
+                return today
+        except requests.RequestException as e:
+            logger.warning(f"Error checking today's expiration for {ticker}: {e}")
+
+        # Fall back to nearest future expiration
+        try:
+            resp = self.session.get(
+                url,
+                params={"expiration_date.gte": today, "order": "asc", "limit": 1},
+                headers=self.headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            if results:
+                exp = (results[0].get("details") or {}).get("expiration_date")
+                if exp:
+                    logger.info(f"Nearest expiration for {ticker}: {exp}")
+                    return exp
+        except requests.RequestException as e:
+            logger.warning(f"Error finding nearest expiration for {ticker}: {e}")
+
+        logger.warning(f"Could not determine target expiration for {ticker}")
+        return None
+
     def fetch_options_with_greeks(
         self,
         ticker: str,
         expiration_date: str
     ) -> List[Dict]:
         """
-        Fetch options data with Greeks for a specific expiration date.
-        
-        Note: Massive endpoint returns all expirations, so we filter by expiration_date
-        
-        https://massive.com/docs/rest/options/overview#available-endpoints
+        Fetch the full options chain for a specific expiration date.
+        Uses server-side expiration_date filter and paginates automatically.
         Endpoint: GET /v3/snapshot/options/{underlyingAsset}
         """
-        # Convert date format if needed (YYYY-MM-DD)
         try:
-            exp_obj = datetime.strptime(expiration_date, "%Y-%m-%d")
-            formatted_exp = exp_obj.strftime("%Y-%m-%d")
+            datetime.strptime(expiration_date, "%Y-%m-%d")
         except ValueError:
             logger.error(f"Invalid expiration date format: {expiration_date}. Use YYYY-MM-DD")
             return []
-        
+
         url = f"{self.BASE_URL}/v3/snapshot/options/{ticker}"
-        params = {
-            "limit": 250  # Max per request
-        }
-        
+        params = {"expiration_date": expiration_date, "limit": 250}
         all_results = []
-        
+
         try:
             while url:
-                logger.info(f"Requesting: {url}")
+                logger.info(f"Fetching {ticker} {expiration_date}: {url}")
                 response = self.session.get(url, params=params, headers=self.headers)
-                logger.info(f"Response status code: {response.status_code}")
-                
-                # Handle 404 specifically
+
                 if response.status_code == 404:
-                    logger.error(
-                        f"Ticker {ticker} not found or no options available. "
-                        f"Endpoint: {url}"
-                    )
+                    logger.error(f"Ticker {ticker} not found. Endpoint: {url}")
                     return []
-                
+
                 response.raise_for_status()
                 data = response.json()
-                
-                logger.info(f"Response data keys: {list(data.keys())}")
-                
+
                 if data.get("status") != "OK":
-                    error_msg = data.get("message", "Unknown error")
-                    request_id = data.get("request_id", "N/A")
                     logger.warning(
-                        f"Massive API error for {ticker}/{formatted_exp}: {error_msg} "
-                        f"(request_id: {request_id})"
+                        f"API error for {ticker}/{expiration_date}: "
+                        f"{data.get('message', 'Unknown error')}"
                     )
                     break
-                
+
                 results = data.get("results", [])
-                logger.info(f"Got {len(results)} results from API for {ticker}")
-                
-                # Log only the first few keys to inspect the response schema
-                if results and isinstance(results[0], dict):
-                    first_keys = list(results[0].keys())[:5]
-                    logger.info(f"First result keys: {first_keys}")
-                    first_contract = results[0]
-                    if isinstance(first_contract.get("details"), dict):
-                        details_keys = list(first_contract["details"].keys())[:5]
-                        logger.info(f"First result.details keys: {details_keys}")
-                    if isinstance(first_contract.get("day"), dict):
-                        day_keys = list(first_contract["day"].keys())[:5]
-                        logger.info(f"First result.day keys: {day_keys}")
-                elif results:
-                    logger.info("First result is not a dict")
-                else:
-                    logger.info("No results returned by API")
-                
-                # Filter results by expiration date since Massive returns all expirations
-                filtered_results = []
-                for r in results:
-                    exp_date = (
-                        (r.get("details") or {}).get("expiration_date") or
-                        (r.get("details") or {}).get("expiration") or
-                        (r.get("details") or {}).get("expiry_date") or
-                        (r.get("details") or {}).get("expiry") or
-                        (r.get("day") or {}).get("expiration_date") or
-                        (r.get("day") or {}).get("expiration") or
-                        (r.get("day") or {}).get("expiry_date") or
-                        (r.get("day") or {}).get("expiry") or
-                        r.get("expiration_date") or
-                        r.get("expiration") or
-                        r.get("expiry_date") or
-                        r.get("expiry")
-                    )
-                    if exp_date == formatted_exp:
-                        filtered_results.append(r)
-                
-                logger.info(f"Filtered to {len(filtered_results)} results for expiration {formatted_exp}")
-                all_results.extend(filtered_results)
-                
-                # Handle pagination
+                logger.info(f"  page: {len(results)} results")
+                all_results.extend(results)
+
                 next_url = data.get("next_url")
                 if next_url:
-                    logger.info(f"Found next_url, fetching next page...")
                     url = next_url
-                    params = {}  # URL already includes params
+                    params = {}
                 else:
                     break
-            
+
+            logger.info(f"Total fetched for {ticker} {expiration_date}: {len(all_results)}")
             return all_results
-        
+
         except requests.RequestException as e:
-            logger.error(f"Failed to fetch options chain for {ticker}/{formatted_exp}: {e}")
+            logger.error(f"Failed to fetch chain for {ticker}/{expiration_date}: {e}")
             return []
+
+    def ingest_nearest_expiration(self, ticker: str) -> int:
+        """
+        Auto-detect today's expiration (or the next available one) and ingest
+        the full options chain for that date.
+        """
+        expiration_date = self.get_nearest_expiration(ticker)
+        if not expiration_date:
+            logger.warning(f"No upcoming expiration found for {ticker}, skipping")
+            return 0
+        logger.info(f"Target expiration for {ticker}: {expiration_date}")
+        return self.ingest_options_chain(ticker, expiration_date)
     
     def transform_quote_to_db_format(
         self,
@@ -198,94 +207,91 @@ class MassiveOptionsIngester:
     ) -> Dict:
         """Transform Massive option quote format to database format"""
         
-        details = quote.get("details", {}) or {}
-        day = quote.get("day", {}) or {}
-        greeks = quote.get("greeks", {}) or {}
-        
-        # Option symbol may be nested under details
+        details         = quote.get("details", {})    or {}
+        day             = quote.get("day", {})         or {}
+        greeks          = quote.get("greeks", {})      or {}
+        last_quote_data = quote.get("last_quote", {})  or {}
+        last_trade_data = quote.get("last_trade", {})  or {}
+
+        # details.ticker is the OCC symbol, e.g. "O:AAPL281215C00060000"
         option_symbol = (
+            details.get("ticker") or
             quote.get("option_symbol") or
-            details.get("contract_symbol") or
-            details.get("symbol") or
-            details.get("contract_name") or
             quote.get("ticker")
         )
-        
-        expiration_date_str = (
-            details.get("expiration_date") or
-            details.get("expiration") or
-            details.get("expiry_date") or
-            details.get("expiry") or
-            quote.get("expiration_date") or
-            quote.get("expiration") or
-            quote.get("expiry_date") or
-            quote.get("expiry")
-        )
-        
+
+        expiration_date_str = details.get("expiration_date") or quote.get("expiration_date")
         if not expiration_date_str:
-            logger.debug("Missing expiration date for quote, skipping")
+            logger.debug("Missing expiration date, skipping")
             return None
-        
         try:
             expiration_date = datetime.strptime(expiration_date_str, "%Y-%m-%d").date()
         except Exception as e:
             logger.debug(f"Could not parse expiration date {expiration_date_str}: {e}")
             return None
-        
+
         strike = details.get("strike_price") or details.get("strike") or quote.get("strike")
         try:
-            if strike is not None:
-                strike = float(strike)
+            strike = float(strike) if strike is not None else None
         except Exception:
-            logger.debug(f"Could not parse strike price {strike}")
+            logger.debug(f"Could not parse strike {strike}")
             return None
-        
+
         option_type = (
-            (details.get("contract_type") or details.get("option_type") or quote.get("option_type") or "")
-            .upper()
-        )
-        if option_type.startswith("C"):
-            option_type = "C"
-        elif option_type.startswith("P"):
-            option_type = "P"
-        else:
-            option_type = option_type[:1]
-        
+            details.get("contract_type") or details.get("option_type") or quote.get("option_type") or ""
+        ).upper()
+        option_type = "C" if option_type.startswith("C") else ("P" if option_type.startswith("P") else option_type[:1])
+
         if not option_symbol:
             option_symbol = f"{ticker}-{expiration_date.strftime('%Y%m%d')}-{option_type or 'X'}-{strike}"
-        
-        time_str = day.get("last_updated") or quote.get("last_updated") or datetime.utcnow().isoformat()
-        try:
-            time = datetime.fromisoformat(time_str)
-        except Exception:
-            time = datetime.utcnow()
-        
-        bid = quote.get("bid") or day.get("bid")
-        ask = quote.get("ask") or day.get("ask")
-        last = quote.get("last") or day.get("close") or day.get("last")
-        volume = quote.get("volume") or day.get("volume")
-        open_interest = quote.get("open_interest") or quote.get("open_interest") or day.get("open_interest")
-        
+
+        # last_updated is Unix nanoseconds (int), not an ISO string
+        ts_ns = day.get("last_updated") or quote.get("last_updated")
+        if ts_ns and isinstance(ts_ns, (int, float)) and ts_ns > 0:
+            try:
+                record_time = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+            except Exception:
+                record_time = datetime.now(tz=timezone.utc)
+        else:
+            record_time = datetime.now(tz=timezone.utc)
+
+        def _get(*sources):
+            for v in sources:
+                if v is not None:
+                    return v
+            return None
+
+        # bid/ask come from last_quote when present (liquid options only)
+        bid  = _get(last_quote_data.get("bid"),  quote.get("bid"))
+        ask  = _get(last_quote_data.get("ask"),  quote.get("ask"))
+        # last price is day.close (most recent trade)
+        last = _get(last_trade_data.get("price"), day.get("close"), day.get("last"), quote.get("last"))
+        # volume and OI
+        volume        = _get(day.get("volume"),        quote.get("volume"))
+        open_interest = _get(quote.get("open_interest"), day.get("open_interest"))
+        # iv lives at the top level as implied_volatility
+        iv = _get(quote.get("implied_volatility"), greeks.get("iv"))
+
         return {
-            "time": time,
-            "ticker": ticker,
-            "option_symbol": option_symbol,
-            "strike": strike,
-            "expiration_date": expiration_date,
-            "option_type": option_type,
-            "bid": bid,
-            "ask": ask,
-            "last": last,
-            "volume": volume,
-            "open_interest": open_interest,
-            "delta": greeks.get("delta"),
-            "gamma": greeks.get("gamma"),
-            "theta": greeks.get("theta"),
-            "vega": greeks.get("vega"),
-            "rho": greeks.get("rho"),
-            "iv": greeks.get("iv") or quote.get("implied_volatility"),
-            "source": "massive",
-            "polygon_request_id": request_id
+            "time":               record_time,
+            "ticker":             ticker,
+            "option_symbol":      option_symbol,
+            "strike":             strike,
+            "expiration_date":    expiration_date,
+            "option_type":        option_type,
+            "bid":                bid,
+            "ask":                ask,
+            "last":               last,
+            "volume":             volume,
+            "open_interest":      open_interest,
+            "delta":              greeks.get("delta"),
+            "gamma":              greeks.get("gamma"),
+            "theta":              greeks.get("theta"),
+            "vega":               greeks.get("vega"),
+            "rho":                greeks.get("rho"),
+            "iv":                 iv,
+            "source":             "massive",
+            "polygon_request_id": request_id,
         }
     
     def ingest_ticker_snapshot(self, ticker: str) -> int:
@@ -314,22 +320,26 @@ class MassiveOptionsIngester:
         ticker: str,
         expiration_date: str
     ) -> int:
-        """Fetch and ingest all options for a specific expiration date"""
+        """
+        Fetch and ingest all options for a specific expiration date.
+        If records for this ticker+expiration already exist for today (NY time),
+        they are replaced so repeat runs on the same day stay current.
+        """
         logger.info(f"Fetching {ticker} options expiring {expiration_date}...")
-        
+
         quotes = self.fetch_options_with_greeks(ticker, expiration_date)
         if not quotes:
             logger.warning(f"No quotes found for {ticker} {expiration_date}")
             return 0
-        
-        # Transform quotes
-        db_quotes = []
-        for quote in quotes:
-            db_quote = self.transform_quote_to_db_format(ticker, quote)
-            if db_quote:
-                db_quotes.append(db_quote)
-        
-        # Insert into database
+
+        db_quotes = [
+            q for q in (self.transform_quote_to_db_format(ticker, r) for r in quotes)
+            if q
+        ]
+
+        # Delete today's existing records (NY time) before re-inserting
+        self.db.delete_daily_records(ticker, expiration_date, ny_today())
+
         inserted = self.db.insert_quotes_batch(db_quotes)
         logger.info(f"✓ Ingested {inserted} quotes for {ticker} {expiration_date}")
         return inserted
@@ -357,34 +367,41 @@ class MassiveOptionsIngester:
 
 # Example usage
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     # Configuration
-    POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "your_api_key_here")
+    POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
     
     # Initialize database and ingester
     db = TimescaleDBClient()
     ingester = MassiveOptionsIngester(POLYGON_API_KEY, db)
     
+    tickers = os.getenv("TICKERS", "AAPL,SPY,QQQ").split(",")
+
     try:
-        # Example 1: Ingest latest snapshot
-        print("\n=== Ingesting Latest Snapshots ===")
-        results = ingester.ingest_multiple_tickers(["AAPL", "SPY", "QQQ"])
-        for ticker, count in results.items():
-            print(f"{ticker}: {count} quotes inserted")
-        
-        # Example 2: Ingest specific expiration
-        print("\n=== Ingesting Specific Expiration ===")
-        count = ingester.ingest_options_chain("AAPL", "2026-06-18")
-        print(f"AAPL 2026-06-18: {count} quotes inserted")
-        
-        # Example 3: Query what we stored
+        print(f"\n=== Ingesting nearest expiration for: {tickers} ===")
+        for ticker in tickers:
+            ticker = ticker.strip()
+            exp = ingester.get_nearest_expiration(ticker)
+            if exp:
+                count = ingester.ingest_options_chain(ticker, exp)
+                print(f"  {ticker} {exp}: {count} quotes inserted")
+            else:
+                print(f"  {ticker}: no upcoming expiration found")
+
         print("\n=== Database Statistics ===")
-        stats = db.get_statistics("AAPL")
-        print(f"AAPL Stats: {stats}")
-        
+        for ticker in tickers:
+            ticker = ticker.strip()
+            stats = db.get_statistics(ticker)
+            if stats:
+                print(f"  {ticker}: {stats['total_quotes']} quotes, "
+                      f"{stats['unique_expirations']} expirations, "
+                      f"{stats['unique_strikes']} strikes")
+
         print("\n=== Latest Quotes ===")
-        quotes = db.get_latest_quotes("AAPL", limit=5)
+        quotes = db.get_latest_quotes(tickers[0].strip(), limit=5)
         for quote in quotes:
-            print(f"  {quote['option_symbol']}: bid={quote['bid']}, ask={quote['ask']}, iv={quote['iv']}")
-    
+            print(f"  {quote['option_symbol']}: last={quote['last']}, iv={quote['iv']}, delta={quote['delta']}")
+
     finally:
         db.close()
