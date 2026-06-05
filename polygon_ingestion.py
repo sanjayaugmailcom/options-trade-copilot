@@ -4,7 +4,7 @@ Fetches options data from Massive API and stores in TimescaleDB
 """
 import requests
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 import logging
@@ -203,7 +203,8 @@ class MassiveOptionsIngester:
         self,
         ticker: str,
         quote: Dict,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        ingestion_time: Optional[datetime] = None,
     ) -> Dict:
         """Transform Massive option quote format to database format"""
         
@@ -245,15 +246,7 @@ class MassiveOptionsIngester:
         if not option_symbol:
             option_symbol = f"{ticker}-{expiration_date.strftime('%Y%m%d')}-{option_type or 'X'}-{strike}"
 
-        # last_updated is Unix nanoseconds (int), not an ISO string
-        ts_ns = day.get("last_updated") or quote.get("last_updated")
-        if ts_ns and isinstance(ts_ns, (int, float)) and ts_ns > 0:
-            try:
-                record_time = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
-            except Exception:
-                record_time = datetime.now(tz=timezone.utc)
-        else:
-            record_time = datetime.now(tz=timezone.utc)
+        record_time = ingestion_time or datetime.now(tz=timezone.utc)
 
         def _get(*sources):
             for v in sources:
@@ -332,13 +325,14 @@ class MassiveOptionsIngester:
             logger.warning(f"No quotes found for {ticker} {expiration_date}")
             return 0
 
+        ingestion_time = datetime.now(tz=timezone.utc)
         db_quotes = [
-            q for q in (self.transform_quote_to_db_format(ticker, r) for r in quotes)
+            q for q in (
+                self.transform_quote_to_db_format(ticker, r, ingestion_time=ingestion_time)
+                for r in quotes
+            )
             if q
         ]
-
-        # Delete today's existing records (NY time) before re-inserting
-        self.db.delete_daily_records(ticker, expiration_date, ny_today())
 
         inserted = self.db.insert_quotes_batch(db_quotes)
         logger.info(f"✓ Ingested {inserted} quotes for {ticker} {expiration_date}")
@@ -365,43 +359,99 @@ class MassiveOptionsIngester:
         return results
 
 
-# Example usage
 if __name__ == "__main__":
+    """
+    Main entry point — two-phase ingestion:
+
+    1. Flat-file catch-up: download any missing past trading days from Massive S3
+       minute aggregates (all expiries for all configured tickers).
+    2. Live snapshot: pull today's option chain snapshot for all configured tickers
+       so the DB is current up to the minute.
+    """
+    import argparse
     from dotenv import load_dotenv
+    from flatfile_ingestion import ingest_date, _already_loaded, _trading_days
+
     load_dotenv()
-    # Configuration
-    POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-    
-    # Initialize database and ingester
-    db = TimescaleDBClient()
-    ingester = MassiveOptionsIngester(POLYGON_API_KEY, db)
-    
-    tickers = os.getenv("TICKERS", "AAPL,SPY,QQQ").split(",")
+
+    parser = argparse.ArgumentParser(description="Ingest options data — flat-file history + live snapshot")
+    parser.add_argument("--from-date", default=None,
+                        help="Earliest flat-file date to consider (YYYY-MM-DD). Default: 90 days ago.")
+    parser.add_argument("--no-snapshot", action="store_true",
+                        help="Skip the live snapshot step.")
+    parser.add_argument("--no-flatfile", action="store_true",
+                        help="Skip the flat-file catch-up step.")
+    parser.add_argument("--workers", type=int, default=3,
+                        help="Parallel flat-file download threads (default: 3).")
+    args = parser.parse_args()
+
+    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    tickers = [t.strip() for t in os.getenv("TICKERS", "AAPL,SPY,QQQ").split(",")]
+    ticker_set = set(tickers)
+    logger.info(f"Tickers: {tickers}")
+
+    db = TimescaleDBClient(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", 5432)),
+        database=os.getenv("DB_NAME", "options_db"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", "password"),
+    )
 
     try:
-        print(f"\n=== Ingesting nearest expiration for: {tickers} ===")
-        for ticker in tickers:
-            ticker = ticker.strip()
-            exp = ingester.get_nearest_expiration(ticker)
-            if exp:
-                count = ingester.ingest_options_chain(ticker, exp)
-                print(f"  {ticker} {exp}: {count} quotes inserted")
+        # ── Phase 1: flat-file catch-up ──────────────────────────────────────
+        if not args.no_flatfile:
+            yesterday = ny_today() - timedelta(days=1)
+            if args.from_date:
+                from_date = datetime.strptime(args.from_date, "%Y-%m-%d").date()
             else:
-                print(f"  {ticker}: no upcoming expiration found")
+                from_date = yesterday - timedelta(days=90)
 
-        print("\n=== Database Statistics ===")
+            all_days   = _trading_days(from_date, yesterday)
+            loaded     = _already_loaded(db)
+            missing    = [d for d in all_days if d not in loaded]
+
+            if missing:
+                logger.info(f"Flat-file catch-up: {len(missing)} missing date(s) "
+                            f"({missing[0]} → {missing[-1]})")
+                total = 0
+                with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                    futs = {pool.submit(ingest_date, d, ticker_set, db): d for d in missing}
+                    for fut in as_completed(futs):
+                        try:
+                            total += fut.result()
+                        except Exception as exc:
+                            logger.error(f"  {futs[fut]}: {exc}", exc_info=True)
+                logger.info(f"✓ Flat-file catch-up complete — {total:,} rows inserted")
+            else:
+                logger.info("Flat-file catch-up: DB is up to date, nothing to fetch")
+
+        # ── Phase 2: live snapshot for today ─────────────────────────────────
+        if not args.no_snapshot:
+            logger.info("Live snapshot: fetching today's option chains…")
+            ingester = MassiveOptionsIngester(os.getenv("POLYGON_API_KEY", ""), db)
+            snap_total = 0
+            for ticker in tickers:
+                exp = ingester.get_nearest_expiration(ticker)
+                if exp:
+                    n = ingester.ingest_options_chain(ticker, exp)
+                    logger.info(f"  {ticker} {exp}: {n} quotes")
+                    snap_total += n
+                else:
+                    logger.warning(f"  {ticker}: no upcoming expiration found")
+            logger.info(f"✓ Live snapshot complete — {snap_total:,} quotes inserted")
+
+        # ── Summary ──────────────────────────────────────────────────────────
+        logger.info("\n=== Database Statistics ===")
         for ticker in tickers:
-            ticker = ticker.strip()
             stats = db.get_statistics(ticker)
             if stats:
-                print(f"  {ticker}: {stats['total_quotes']} quotes, "
-                      f"{stats['unique_expirations']} expirations, "
-                      f"{stats['unique_strikes']} strikes")
-
-        print("\n=== Latest Quotes ===")
-        quotes = db.get_latest_quotes(tickers[0].strip(), limit=5)
-        for quote in quotes:
-            print(f"  {quote['option_symbol']}: last={quote['last']}, iv={quote['iv']}, delta={quote['delta']}")
+                logger.info(f"  {ticker}: {stats['total_quotes']:,} quotes  "
+                            f"{stats['unique_expirations']} expirations  "
+                            f"{stats['unique_strikes']} strikes  "
+                            f"({str(stats['first_quote'])[:10]} → {str(stats['last_quote'])[:10]})")
 
     finally:
         db.close()

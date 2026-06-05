@@ -78,8 +78,19 @@ PLOTLY_LAYOUT = dict(
 
 app = Dash(__name__, title="Options Analytics")
 
-_tickers = get_tickers()
-_default_ticker = _tickers[0] if _tickers else None
+def _all_tickers():
+    try:
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT ticker FROM options_quotes ORDER BY ticker")
+        tickers = [row[0] for row in cur.fetchall()]
+        conn.close()
+        return tickers
+    except Exception as exc:
+        print(f"[_all_tickers error] {exc}")
+        return []
+
+_TICKER_OPTIONS = [{"label": t, "value": t} for t in _all_tickers()]
 
 
 def _card(children, style=None):
@@ -120,10 +131,12 @@ app.layout = html.Div(
                     _label("Ticker"),
                     dcc.Dropdown(
                         id="ticker-dd",
-                        options=[{"label": t, "value": t} for t in _tickers],
-                        value=_default_ticker,
-                        clearable=False,
-                        style={"width": "160px", "background": CARD, "color": TEXT},
+                        options=_TICKER_OPTIONS,
+                        value=None,
+                        placeholder="Search ticker…",
+                        searchable=True,
+                        clearable=True,
+                        style={"width": "200px", "background": CARD, "color": TEXT},
                     ),
                 ]),
                 html.Div([
@@ -152,38 +165,46 @@ app.layout = html.Div(
                         "fontSize": "13px",
                     },
                 ),
+                html.Button(
+                    "✦  Ask Gemini",
+                    id="gemini-btn",
+                    n_clicks=0,
+                    style={
+                        "background": "#1a1a2e",
+                        "color": "#a78bfa",
+                        "border": "1px solid #a78bfa",
+                        "borderRadius": "6px",
+                        "padding": "8px 18px",
+                        "cursor": "pointer",
+                        "fontFamily": "Consolas, monospace",
+                        "fontWeight": "bold",
+                        "fontSize": "13px",
+                    },
+                ),
             ],
         ),
 
         # Stats bar
         html.Div(id="stats-bar", style={"padding": "0 24px 8px"}),
 
-        # Tabs
-        html.Div(
-            style={"padding": "0 24px 24px"},
-            children=[
-                dcc.Tabs(
-                    id="tabs",
-                    value="chain",
-                    style={"borderBottom": f"1px solid {BORDER}"},
-                    colors={"border": BORDER, "primary": BLUE, "background": BG},
-                    children=[
-                        dcc.Tab(label="Chain",            value="chain",   style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                        dcc.Tab(label="IV Analysis",      value="iv",      style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                        dcc.Tab(label="Greeks",           value="greeks",  style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                        dcc.Tab(label="Volume & OI",      value="vol",     style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                        dcc.Tab(label="Liquidity",        value="liq",     style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                        dcc.Tab(label="3D IV Surface",    value="surface", style={"color": MUTED}, selected_style={"color": TEXT, "background": CARD, "borderTop": f"2px solid {BLUE}"}),
-                    ],
-                ),
-                html.Div(id="tab-content", style={"paddingTop": "16px"}),
-            ],
-        ),
+        # Gemini recommendation (above chain)
+        html.Div(style={"padding": "0 24px"}, children=[
+            dcc.Loading(
+                id="gemini-loading",
+                type="circle",
+                color="#a78bfa",
+                children=html.Div(id="gemini-output"),
+            ),
+        ]),
+
+        # Page content
+        html.Div(id="page-content", style={"padding": "0 24px 24px"}),
     ],
 )
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
+
 
 @app.callback(
     Output("expiry-dd", "options"),
@@ -253,30 +274,228 @@ def update_stats(ticker, expiry, _):
     )
 
 
+def _section(title):
+    return html.Div(
+        title,
+        style={
+            "color": MUTED,
+            "fontSize": "11px",
+            "textTransform": "uppercase",
+            "letterSpacing": "0.1em",
+            "borderBottom": f"1px solid {BORDER}",
+            "paddingBottom": "6px",
+            "margin": "28px 0 14px",
+        },
+    )
+
+
 @app.callback(
-    Output("tab-content", "children"),
-    Input("tabs", "value"),
+    Output("page-content", "children"),
     Input("ticker-dd", "value"),
     Input("expiry-dd", "value"),
     Input("refresh-btn", "n_clicks"),
 )
-def render_tab(tab, ticker, expiry, _):
-    if not ticker or not expiry:
-        return html.Div("Select a ticker and expiration date.", style={"color": MUTED, "padding": "40px", "textAlign": "center"})
+def render_page(ticker, expiry, _):
+    import traceback
 
-    if tab == "chain":
-        return tab_chain(ticker, expiry)
-    if tab == "iv":
-        return tab_iv(ticker, expiry)
-    if tab == "greeks":
-        return tab_greeks(ticker, expiry)
-    if tab == "vol":
-        return tab_volume(ticker, expiry)
-    if tab == "liq":
-        return tab_liquidity(ticker, expiry)
-    if tab == "surface":
-        return tab_surface(ticker)
-    return html.Div("Unknown tab")
+    if not ticker or not expiry:
+        return html.Div(
+            "Select a ticker and expiration date.",
+            style={"color": MUTED, "padding": "40px", "textAlign": "center"},
+        )
+
+    sections = [
+        ("Premium History",      lambda: tab_premium_history(ticker, expiry)),
+        ("Options Chain",        lambda: tab_chain(ticker, expiry)),
+        ("Implied Volatility",   lambda: tab_iv(ticker, expiry)),
+        ("Greeks",               lambda: tab_greeks(ticker, expiry)),
+        ("Volume & Open Interest", lambda: tab_volume(ticker, expiry)),
+        ("Liquidity",            lambda: tab_liquidity(ticker, expiry)),
+        ("IV Surface",           lambda: tab_surface(ticker)),
+    ]
+
+    children = []
+    for name, fn in sections:
+        children.append(_section(name))
+        try:
+            children.append(fn())
+        except Exception:
+            tb = traceback.format_exc()
+            print(f"\n[ERROR in {name}]\n{tb}")
+            children.append(_card(html.Span(
+                f"Error rendering {name}: {tb.splitlines()[-1]}",
+                style={"color": RED, "fontFamily": "monospace", "fontSize": "12px", "whiteSpace": "pre-wrap"},
+            )))
+
+    return html.Div(children)
+
+
+# ── Gemini recommendation ─────────────────────────────────────────────────────
+
+import requests as _requests
+
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+
+def _gemini_generate(prompt: str) -> str:
+    key = os.getenv("GEMINI_API_KEY", "")
+    resp = _requests.post(
+        _GEMINI_URL,
+        params={"key": key},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192},
+        },
+        timeout=30,
+    )
+    if not resp.ok:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text[:300]
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def _build_gemini_prompt(ticker: str, expiry: str) -> str:
+    """Gather chain + greeks data from DB and format as a prompt for Gemini."""
+    from datetime import date
+    dte = (pd.to_datetime(expiry).date() - date.today()).days
+
+    # Chain data — top 20 strikes closest to ATM
+    df = qdf(
+        """
+        SELECT DISTINCT ON (strike, option_type)
+            strike, option_type, last, iv, delta, gamma, theta, vega, volume, open_interest
+        FROM options_quotes
+        WHERE ticker = %s AND expiration_date = %s
+        ORDER BY strike, option_type, time DESC
+        """,
+        [ticker, expiry],
+    )
+
+    if df.empty:
+        return ""
+
+    df["strike"] = df["strike"].astype(float)
+    calls = df[df["option_type"] == "C"].set_index("strike")
+    puts  = df[df["option_type"] == "P"].set_index("strike")
+
+    # Estimate spot
+    spot = None
+    c_valid = calls[calls["delta"].notna()]
+    if not c_valid.empty:
+        spot = float((c_valid["delta"] - 0.5).abs().idxmin())
+
+    all_strikes = sorted(s for s in set(calls.index) | set(puts.index) if s is not None and s == s)
+    if spot:
+        all_strikes.sort(key=lambda s: abs(s - spot))
+    top_strikes = all_strikes[:10]
+
+    # Put/call ratios
+    c_vol = calls["volume"].sum() if "volume" in calls.columns else 0
+    p_vol = puts["volume"].sum()  if "volume" in puts.columns  else 0
+    c_oi  = calls["open_interest"].sum() if "open_interest" in calls.columns else 0
+    p_oi  = puts["open_interest"].sum()  if "open_interest" in puts.columns  else 0
+    pcr_vol = round(p_vol / c_vol, 2) if c_vol else "n/a"
+    pcr_oi  = round(p_oi  / c_oi,  2) if c_oi  else "n/a"
+
+    # IV term structure
+    df_term = qdf(
+        """
+        SELECT expiration_date,
+               EXTRACT(DAY FROM expiration_date::date - CURRENT_DATE)::int AS dte,
+               AVG(iv) AS avg_iv
+        FROM options_quotes
+        WHERE ticker = %s AND iv IS NOT NULL AND iv > 0
+        GROUP BY expiration_date ORDER BY expiration_date LIMIT 8
+        """,
+        [ticker],
+    )
+    term_lines = []
+    for _, r in df_term.iterrows():
+        term_lines.append(f"  {r['expiration_date']}  DTE={int(r['dte'])}  IV={r['avg_iv']*100:.1f}%")
+
+    # Chain table
+    def fv(frame, s, col, fmt=".3f"):
+        try:
+            v = frame.at[s, col]
+            return f"{v:{fmt}}" if pd.notna(v) else "—"
+        except Exception:
+            return "—"
+
+    chain_lines = ["Strike | C-IV   C-Δ    C-Θ    C-Vol | P-IV   P-Δ    P-Θ    P-Vol"]
+    for s in top_strikes:
+        chain_lines.append(
+            f"{s:7.2f} | "
+            f"{fv(calls,s,'iv','%'):>6} {fv(calls,s,'delta'):>6} {fv(calls,s,'theta'):>6} {fv(calls,s,'volume','.0f'):>7} | "
+            f"{fv(puts,s,'iv','%'):>6} {fv(puts,s,'delta'):>6} {fv(puts,s,'theta'):>6} {fv(puts,s,'volume','.0f'):>7}"
+        )
+
+    prompt = f"""Ticker: {ticker}
+Expiration: {expiry}  |  Days to Expiry: {dte}
+Estimated Underlying Price: ~${spot:,.2f}
+
+IV Term Structure:
+{chr(10).join(term_lines) if term_lines else "  No data"}
+
+Put/Call Volume Ratio: {pcr_vol}
+Put/Call OI Ratio:     {pcr_oi}
+
+Options Chain (20 strikes nearest ATM, IV shown as decimal):
+{chr(10).join(chain_lines)}
+
+Based on the days to expiry, option chain and greeks on this page, recommend option trading strategies."""
+
+    return prompt
+
+
+@app.callback(
+    Output("gemini-output", "children"),
+    Input("gemini-btn", "n_clicks"),
+    State("ticker-dd", "value"),
+    State("expiry-dd", "value"),
+    prevent_initial_call=True,
+)
+def ask_gemini(n_clicks, ticker, expiry):
+    if not n_clicks or not ticker or not expiry:
+        return None
+
+    if not os.getenv("GEMINI_API_KEY", ""):
+        return _card(html.Span(
+            "GEMINI_API_KEY not set in .env — add it to enable AI recommendations.",
+            style={"color": YELLOW},
+        ))
+
+    prompt = _build_gemini_prompt(ticker, expiry)
+    if not prompt:
+        return _card(html.Span("No options data available to analyse.", style={"color": MUTED}))
+
+    try:
+        text = _gemini_generate(prompt)
+    except Exception as exc:
+        return _card(html.Span(f"Gemini error: {exc}", style={"color": RED}))
+
+    return html.Div(
+        style={
+            "background": "#0e0e1a",
+            "border": "1px solid #a78bfa",
+            "borderRadius": "8px",
+            "padding": "20px 24px",
+            "marginBottom": "16px",
+        },
+        children=[
+            html.Div(
+                "✦  Gemini Strategy Recommendation",
+                style={"color": "#a78bfa", "fontWeight": "bold", "fontSize": "13px",
+                       "marginBottom": "12px", "textTransform": "uppercase", "letterSpacing": "0.08em"},
+            ),
+            dcc.Markdown(
+                text,
+                style={"color": TEXT, "fontSize": "13px", "lineHeight": "1.7"},
+            ),
+        ],
+    )
 
 
 # ── Tab builders ─────────────────────────────────────────────────────────────
@@ -307,7 +526,7 @@ def tab_chain(ticker, expiry):
     calls = df[df["option_type"] == "C"].drop("option_type", axis=1).set_index("strike")
     puts  = df[df["option_type"] == "P"].drop("option_type", axis=1).set_index("strike")
 
-    all_strikes = sorted(set(calls.index.tolist()) | set(puts.index.tolist()))
+    all_strikes = sorted(s for s in set(calls.index.tolist()) | set(puts.index.tolist()) if s is not None and s == s)
 
     # Estimate current price: call strike with delta closest to 0.5
     atm_strike = None
@@ -499,8 +718,10 @@ def tab_iv(ticker, expiry):
         fig_term = _empty_fig("No IV term structure data")
 
     return html.Div([
-        _card(dcc.Graph(figure=fig_smile, config={"displayModeBar": True})),
-        _card(dcc.Graph(figure=fig_term,  config={"displayModeBar": True})),
+        html.Div([
+            _card(dcc.Graph(figure=fig_smile, config={"displayModeBar": True}), style={"flex": "1"}),
+            _card(dcc.Graph(figure=fig_term,  config={"displayModeBar": True}), style={"flex": "1"}),
+        ], style={"display": "flex", "gap": "16px"}),
     ])
 
 
@@ -578,6 +799,9 @@ def tab_volume(ticker, expiry):
 
     if df.empty:
         return _card(dcc.Graph(figure=_empty_fig("No volume data"), config={"displayModeBar": False}))
+
+    df["total_volume"]  = pd.to_numeric(df["total_volume"],  errors="coerce").fillna(0)
+    df["open_interest"] = pd.to_numeric(df["open_interest"], errors="coerce").fillna(0)
 
     calls = df[df["option_type"] == "C"]
     puts  = df[df["option_type"] == "P"]
@@ -717,6 +941,129 @@ def tab_liquidity(ticker, expiry):
             _card(dcc.Graph(figure=fig_ratio,    config={"displayModeBar": True}), style={"flex": "1"}),
             _card(dcc.Graph(figure=fig_activity, config={"displayModeBar": True}), style={"flex": "1"}),
         ], style={"display": "flex", "gap": "16px"}),
+    ])
+
+
+def tab_premium_history(ticker, expiry):
+    """Premium over time for contracts with a fixed expiry — one line per strike+type."""
+    df = qdf(
+        """
+        SELECT
+            time, strike, option_type,
+            bid, ask, last,
+            delta
+        FROM options_quotes
+        WHERE ticker = %s AND expiration_date = %s
+        ORDER BY time, strike, option_type
+        """,
+        [ticker, expiry],
+    )
+
+    if df.empty:
+        return _card(dcc.Graph(figure=_empty_fig("No time-series data yet — run more ingestion cycles"), config={"displayModeBar": False}))
+
+    # Compute mid price: prefer (bid+ask)/2 when both present, else last
+    for col in ("bid", "ask", "last"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    both = df["bid"].notna() & df["ask"].notna()
+    df["mid"] = ((df["bid"] + df["ask"]) / 2).where(both, other=df["last"])
+    df = df.dropna(subset=["mid"])
+    if df.empty:
+        return _card(dcc.Graph(figure=_empty_fig("No premium data available"), config={"displayModeBar": False}))
+
+    df["time"] = pd.to_datetime(df["time"])
+    df["strike"] = df["strike"].astype(float)
+
+    # Estimate ATM from delta closest to 0.5 in the latest snapshot
+    latest = df[df["time"] == df["time"].max()]
+    calls_latest = latest[latest["option_type"] == "C"].dropna(subset=["delta"])
+    atm_strike = None
+    if not calls_latest.empty:
+        atm_strike = float(calls_latest.loc[(calls_latest["delta"] - 0.5).abs().idxmin(), "strike"])
+
+    all_strikes = sorted(s for s in df["strike"].unique() if s is not None and s == s)
+    if atm_strike is not None:
+        all_strikes = sorted(all_strikes, key=lambda s: abs(s - atm_strike))
+    top_strikes = all_strikes[:8]  # 8 strikes nearest ATM
+
+    fig_calls = go.Figure()
+    fig_puts  = go.Figure()
+
+    colors = [BLUE, GREEN, RED, YELLOW, PURPLE, "#f0883e", "#39d353", "#a5d6ff"]
+
+    for i, strike in enumerate(top_strikes):
+        color = colors[i % len(colors)]
+        for opt_type, fig, dash in [("C", fig_calls, "solid"), ("P", fig_puts, "dash")]:
+            sub = df[(df["strike"] == strike) & (df["option_type"] == opt_type)].sort_values("time")
+            if sub.empty:
+                continue
+            label = f"${strike:,.0f}"
+            fig.add_trace(go.Scatter(
+                x=sub["time"],
+                y=sub["mid"].round(4),
+                mode="lines+markers",
+                name=label,
+                line=dict(color=color, width=2, dash=dash),
+                marker=dict(size=5),
+                hovertemplate=f"Strike {label}<br>Time: %{{x}}<br>Mid: $%{{y:.3f}}<extra></extra>",
+            ))
+
+    n_snapshots = df["time"].nunique()
+    t_min = df["time"].min()
+    t_max = df["time"].max()
+    time_span = t_max - t_min
+    # Pick tick format based on how spread out the snapshots are
+    if time_span.total_seconds() < 3600:
+        tick_fmt = "%H:%M:%S"
+    elif time_span.total_seconds() < 86400:
+        tick_fmt = "%H:%M"
+    else:
+        tick_fmt = "%m-%d %H:%M"
+
+    subtitle = f"({n_snapshots} snapshot{'s' if n_snapshots != 1 else ''})"
+
+    xaxis_cfg = dict(
+        gridcolor=BORDER,
+        zerolinecolor=BORDER,
+        tickformat=tick_fmt,
+        rangeslider=dict(visible=True, bgcolor=BG, bordercolor=BORDER, thickness=0.06),
+        type="date",
+    )
+
+    base_layout = {k: v for k, v in PLOTLY_LAYOUT.items() if k not in ("xaxis", "yaxis")}
+
+    for fig, title in [
+        (fig_calls, f"{ticker} Call Premiums Over Time — Exp {expiry}  {subtitle}"),
+        (fig_puts,  f"{ticker} Put Premiums Over Time — Exp {expiry}  {subtitle}"),
+    ]:
+        fig.update_layout(
+            **base_layout,
+            title=dict(text=title, font=dict(color=TEXT, size=13)),
+            legend_title="Strike",
+            height=420,
+        )
+        fig.update_xaxes(**xaxis_cfg)
+        fig.update_yaxes(gridcolor=BORDER, zerolinecolor=BORDER, title_text="Mid Price ($)")
+
+    t_range = (
+        f"{t_min.strftime('%Y-%m-%d %H:%M')} → {t_max.strftime('%Y-%m-%d %H:%M')} UTC"
+        if n_snapshots > 1 else
+        f"Single snapshot at {t_min.strftime('%Y-%m-%d %H:%M')} UTC — run more ingestion cycles to see changes"
+    )
+
+    return html.Div([
+        _card(dcc.Graph(figure=fig_calls, config={"displayModeBar": True})),
+        _card(dcc.Graph(figure=fig_puts,  config={"displayModeBar": True})),
+        _card(html.Div([
+            html.Span(
+                f"Showing up to 8 strikes nearest ATM"
+                + (f" (~${atm_strike:,.2f})" if atm_strike else "")
+                + ".  Mid = (bid+ask)/2 where available, else last trade.",
+                style={"color": MUTED, "fontSize": "12px"},
+            ),
+            html.Br(),
+            html.Span(t_range, style={"color": MUTED, "fontSize": "12px"}),
+        ])),
     ])
 
 

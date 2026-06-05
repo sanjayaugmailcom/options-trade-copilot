@@ -92,14 +92,16 @@ class TimescaleDBClient:
         query = f"""
             INSERT INTO options_quotes ({', '.join(columns)})
             VALUES %s
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (option_symbol, time) DO NOTHING
+            RETURNING 1
         """
-        
+
         with self.get_connection() as conn:
             cur = conn.cursor()
-            execute_values(cur, query, values, page_size=1000)
-            inserted = cur.rowcount
-            logger.info(f"✓ Inserted {inserted} quotes")
+            # fetch=True collects RETURNING rows across all batches → accurate count
+            rows = execute_values(cur, query, values, page_size=1000, fetch=True)
+            inserted = len(rows)
+            logger.info(f"✓ Inserted {inserted:,} quotes ({len(values) - inserted:,} dupes skipped)")
             return inserted
     
     def get_latest_quotes(
@@ -202,26 +204,21 @@ class TimescaleDBClient:
             result = cur.fetchone()
             return dict(result) if result else {}
     
-    def delete_daily_records(
-        self,
-        ticker: str,
-        expiration_date: str,
-        ny_date,  # datetime.date in New York timezone
-    ) -> int:
-        """Delete all records for ticker+expiration ingested on a given NY calendar day."""
+    def delete_other_expirations(self, ticker: str, keep_expiration_date: str) -> int:
+        """Delete snapshot records for a ticker whose expiration_date differs from keep_expiration_date.
+        Flat-file rows (source='flatfile') are intentionally preserved."""
         query = """
             DELETE FROM options_quotes
             WHERE ticker = %s
-              AND expiration_date = %s
-              AND (time AT TIME ZONE 'America/New_York')::date = %s
+              AND expiration_date != %s
+              AND source != 'flatfile'
         """
         with self.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(query, [ticker, expiration_date, ny_date])
+            cur.execute(query, [ticker, keep_expiration_date])
             deleted = cur.rowcount
             logger.info(
-                f"Deleted {deleted} stale records for {ticker} {expiration_date} "
-                f"on {ny_date} (NY) before re-ingestion"
+                f"Deleted {deleted} records for {ticker} with expiration != {keep_expiration_date}"
             )
             return deleted
 

@@ -135,13 +135,13 @@ class ScheduledIngester:
 def main():
     """Main entry point"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Schedule options data ingestion')
     parser.add_argument(
         '--mode',
-        choices=['once', 'continuous'],
+        choices=['once', 'continuous', 'backfill'],
         default='once',
-        help='Run once or continuously'
+        help='once: single snapshot run | continuous: repeat on interval | backfill: load flat-file history'
     )
     parser.add_argument(
         '--interval',
@@ -149,18 +149,53 @@ def main():
         default=60,
         help='Interval in minutes for continuous mode (default: 60)'
     )
-    
+    parser.add_argument(
+        '--date',
+        action='append',
+        dest='dates',
+        help='Date to backfill YYYY-MM-DD (repeatable). Used with --mode backfill.'
+    )
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=1,
+        help='Number of past trading days to backfill (default: 1 = yesterday). Used with --mode backfill.'
+    )
+
     args = parser.parse_args()
-    
+
     try:
+        if args.mode == 'backfill':
+            from flatfile_ingestion import backfill_date, _prev_trading_days
+            from datetime import date as _date
+            from db_client import TimescaleDBClient
+
+            db = TimescaleDBClient(
+                host=os.getenv("DB_HOST", "localhost"),
+                port=int(os.getenv("DB_PORT", 5432)),
+                database=os.getenv("DB_NAME", "options_db"),
+                user=os.getenv("DB_USER", "postgres"),
+                password=os.getenv("DB_PASSWORD", "password"),
+            )
+            tickers = os.getenv("TICKERS", "META,SPY,QQQ").split(",")
+            target_dates = (
+                [_date.fromisoformat(d) for d in args.dates]
+                if args.dates else
+                _prev_trading_days(args.days)
+            )
+            logger.info(f"Backfilling {[str(d) for d in target_dates]} for {tickers}")
+            total = sum(backfill_date(d, tickers, db) for d in target_dates)
+            logger.info(f"✓ Backfill complete — {total:,} rows inserted")
+            db.close()
+            sys.exit(0)
+
         ingester = ScheduledIngester()
-        
         if args.mode == 'once':
             success = ingester.run_once()
             sys.exit(0 if success else 1)
         else:
             ingester.run_continuous(args.interval)
-    
+
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
